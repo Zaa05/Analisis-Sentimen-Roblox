@@ -2,12 +2,15 @@ import streamlit as st
 import joblib
 import re
 import nltk
+import pandas as pd  # <-- TAMBAHKAN IMPORT INI
 
 from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 
-
+# ===============================
+# FIX NLTK DOWNLOAD
+# ===============================
 import ssl
 
 try:
@@ -26,7 +29,7 @@ except LookupError:
     nltk.download('stopwords', quiet=True)
 
 # ===============================
-# LOAD MODEL (PERBAIKAN NAMA FILE)
+# LOAD MODEL
 # ===============================
 @st.cache_resource
 def load_model():
@@ -96,12 +99,6 @@ label_map = {
     0: "Negatif 😡",
     1: "Netral 😐", 
     2: "Positif 😊"
-}
-
-label_colors = {
-    0: "red",
-    1: "orange",
-    2: "green"
 }
 
 # ===============================
@@ -182,7 +179,9 @@ with st.sidebar:
         for text, expected in test_cases:
             analysis = analyze_prediction(text)
             if analysis:
-                match = "✅" if analysis['prediction'] == expected.split()[1][1] else "❌"
+                # Ekstrak angka dari expected: "Negatif (0)" -> "0"
+                expected_num = expected.split('(')[1].split(')')[0]
+                match = "✅" if str(analysis['prediction']) == expected_num else "❌"
                 st.write(f"{match} **'{text}'**")
                 st.write(f"  Prediksi: {analysis['label']}")
                 st.write(f"  Expected: {expected}")
@@ -219,18 +218,13 @@ if predict_button:
                 st.markdown("---")
                 st.subheader("🎯 Hasil Analisis")
                 
-                # Tampilkan label dengan warna dan emoji
-                col_a, col_b, col_c = st.columns([1, 2, 1])
-                with col_b:
-                    if analysis['prediction'] == 0:
-                        st.markdown(f"<h1 style='text-align: center; color: red;'>{analysis['label']}</h1>", 
-                                  unsafe_allow_html=True)
-                    elif analysis['prediction'] == 1:
-                        st.markdown(f"<h1 style='text-align: center; color: orange;'>{analysis['label']}</h1>", 
-                                  unsafe_allow_html=True)
-                    else:
-                        st.markdown(f"<h1 style='text-align: center; color: green;'>{analysis['label']}</h1>", 
-                                  unsafe_allow_html=True)
+                # Tampilkan label dengan warna
+                if analysis['prediction'] == 0:
+                    st.error(f"## {analysis['label']}")
+                elif analysis['prediction'] == 1:
+                    st.warning(f"## {analysis['label']}")
+                else:
+                    st.success(f"## {analysis['label']}")
                 
                 # Detail analysis
                 with st.expander("📊 Detail Analisis Lengkap", expanded=False):
@@ -268,37 +262,32 @@ if predict_button:
                             neg_prob = analysis['probabilities']['negatif']
                             st.metric(
                                 label="Negatif", 
-                                value=f"{neg_prob:.1%}",
-                                delta=f"{(neg_prob-0.333):+.1%}" if neg_prob > 0.333 else None
+                                value=f"{neg_prob:.1%}"
                             )
                         
                         with col2:
                             neu_prob = analysis['probabilities']['netral']
                             st.metric(
                                 label="Netral", 
-                                value=f"{neu_prob:.1%}",
-                                delta=f"{(neu_prob-0.333):+.1%}" if neu_prob > 0.333 else None
+                                value=f"{neu_prob:.1%}"
                             )
                         
                         with col3:
                             pos_prob = analysis['probabilities']['positif']
                             st.metric(
                                 label="Positif", 
-                                value=f"{pos_prob:.1%}",
-                                delta=f"{(pos_prob-0.333):+.1%}" if pos_prob > 0.333 else None
+                                value=f"{pos_prob:.1%}"
                             )
                         
-                        # Bar chart untuk probabilitas
-                        prob_data = {
+                        # Bar chart untuk probabilitas - PERBAIKAN DI SINI
+                        prob_data = pd.DataFrame({
                             'Sentimen': ['Negatif', 'Netral', 'Positif'],
                             'Probabilitas': [neg_prob, neu_prob, pos_prob]
-                        }
+                        })
                         
-                        # Gunakan native Streamlit chart
-                        st.bar_chart(
-                            data=prob_data.set_index('Sentimen'),
-                            color=[label_colors[0], label_colors[1], label_colors[2]]
-                        )
+                        # Atur index dan buat chart
+                        prob_data_chart = prob_data.set_index('Sentimen')
+                        st.bar_chart(prob_data_chart)
                 
                 # Catatan jika ada
                 if 'note' in analysis:
