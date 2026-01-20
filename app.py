@@ -2,15 +2,12 @@ import streamlit as st
 import joblib
 import re
 import nltk
-import numpy as np
 
 from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 
-# ===============================
-# FIX NLTK DOWNLOAD
-# ===============================
+
 import ssl
 
 try:
@@ -29,15 +26,33 @@ except LookupError:
     nltk.download('stopwords', quiet=True)
 
 # ===============================
-# LOAD MODEL
+# LOAD MODEL (PERBAIKAN NAMA FILE)
 # ===============================
-model = joblib.load("bernoulli_nb.pkl")
-tfidf = joblib.load("tfidf_vectorizer.pkl")
+@st.cache_resource
+def load_model():
+    """Cache model untuk performa lebih baik"""
+    try:
+        model = joblib.load("bernoulli_nb_model.pkl")
+        tfidf = joblib.load("tfidf_vectorizer.pkl")
+        return model, tfidf
+    except FileNotFoundError as e:
+        st.error(f"File model tidak ditemukan: {e}")
+        st.error("Pastikan file berikut ada di folder yang sama:")
+        st.error("1. bernoulli_nb_model.pkl")
+        st.error("2. tfidf_vectorizer.pkl")
+        return None, None
+
+model, tfidf = load_model()
+
+# Cek jika model berhasil dimuat
+if model is None or tfidf is None:
+    st.stop()
 
 # Cek model info
 st.sidebar.markdown("### ℹ️ Info Model")
 st.sidebar.write(f"Model type: {type(model).__name__}")
 st.sidebar.write(f"Classes: {model.classes_ if hasattr(model, 'classes_') else 'N/A'}")
+st.sidebar.write(f"Vocabulary size: {len(tfidf.vocabulary_) if hasattr(tfidf, 'vocabulary_') else 'N/A'}")
 
 # ===============================
 # PREPROCESSING
@@ -48,12 +63,23 @@ stemmer = factory.create_stemmer()
 # Cache stopwords to avoid repeated calls
 @st.cache_data
 def get_stopwords():
-    return set(stopwords.words('indonesian'))
+    """Mendapatkan stopwords bahasa Indonesia"""
+    try:
+        return set(stopwords.words('indonesian'))
+    except:
+        # Fallback jika stopwords tidak ditemukan
+        return set(['yang', 'di', 'dan', 'untuk', 'pada', 'ke', 'dari', 'ini', 'itu', 'dengan'])
 
 stop_words = get_stopwords()
 
+@st.cache_data
 def preprocess(text):
+    """Preprocessing teks dengan caching"""
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    
     text = text.lower()
+    # Menghapus karakter selain huruf dan spasi
     text = re.sub(r'[^a-z\s]', '', text)
     
     try:
@@ -61,21 +87,44 @@ def preprocess(text):
     except LookupError:
         tokens = text.split()
     
+    # Stemming dan filtering
     tokens = [stemmer.stem(w) for w in tokens if w not in stop_words and len(w) > 1]
     return ' '.join(tokens)
 
+# Mapping label
 label_map = {
     0: "Negatif 😡",
-    1: "Netral 😐",
+    1: "Netral 😐", 
     2: "Positif 😊"
 }
 
+label_colors = {
+    0: "red",
+    1: "orange",
+    2: "green"
+}
+
 # ===============================
-# DIAGNOSTIC FUNCTIONS
+# PREDICTION FUNCTION
 # ===============================
 def analyze_prediction(text):
     """Analisis lengkap prediksi"""
+    if not text.strip():
+        return None
+    
     clean_text = preprocess(text)
+    
+    if not clean_text.strip():
+        return {
+            'original': text,
+            'cleaned': clean_text,
+            'prediction': 1,  # Default netral jika teks kosong setelah preprocessing
+            'label': label_map[1],
+            'tokens': [],
+            'vocab_status': {},
+            'note': 'Teks tidak mengandung kata bermakna setelah preprocessing'
+        }
+    
     vector = tfidf.transform([clean_text])
     prediction = model.predict(vector)[0]
     
@@ -84,22 +133,26 @@ def analyze_prediction(text):
         'cleaned': clean_text,
         'prediction': prediction,
         'label': label_map[prediction],
-        'tokens': clean_text.split()
+        'tokens': clean_text.split() if clean_text else []
     }
     
     # Cek probabilitas jika ada
     if hasattr(model, 'predict_proba'):
-        proba = model.predict_proba(vector)[0]
-        analysis['probabilities'] = {
-            'negatif': proba[0],
-            'netral': proba[1],
-            'positif': proba[2]
-        }
+        try:
+            proba = model.predict_proba(vector)[0]
+            analysis['probabilities'] = {
+                'negatif': float(proba[0]),
+                'netral': float(proba[1]),
+                'positif': float(proba[2])
+            }
+        except:
+            pass
     
     # Cek apakah tokens ada di vocabulary
     vocab_status = {}
-    for token in analysis['tokens']:
-        vocab_status[token] = token in tfidf.vocabulary_
+    if hasattr(tfidf, 'vocabulary_'):
+        for token in analysis['tokens']:
+            vocab_status[token] = token in tfidf.vocabulary_
     analysis['vocab_status'] = vocab_status
     
     return analysis
@@ -109,80 +162,152 @@ def analyze_prediction(text):
 # ===============================
 st.title("📊 Analisis Sentimen Roblox Indonesia")
 st.write("Model: **Bernoulli Naive Bayes + TF-IDF**")
+st.markdown("---")
 
 # Sidebar diagnostics
 with st.sidebar:
     st.markdown("### 🔍 Diagnosa")
     
-    if st.button("Test Model Sederhana"):
+    if st.button("Test Model Sederhana", type="secondary"):
+        st.markdown("#### Hasil Test:")
         test_cases = [
-            ("jelek", "Harusnya Negatif (0)"),
-            ("buruk", "Harusnya Negatif (0)"),
-            ("payah", "Harusnya Negatif (0)"),
-            ("biasa", "Harusnya Netral (1)"),
-            ("bagus", "Harusnya Positif (2)"),
-            ("baik", "Harusnya Positif (2)")
+            ("jelek", "Negatif (0)"),
+            ("buruk", "Negatif (0)"),
+            ("payah", "Negatif (0)"),
+            ("biasa", "Netral (1)"),
+            ("bagus", "Positif (2)"),
+            ("baik", "Positif (2)")
         ]
         
         for text, expected in test_cases:
             analysis = analyze_prediction(text)
-            st.write(f"**'{text}'**")
-            st.write(f"  → Prediksi: {analysis['prediction']}")
-            st.write(f"  → Expected: {expected}")
-            st.write(f"  → Cleaned: {analysis['cleaned']}")
-            st.write("---")
+            if analysis:
+                match = "✅" if analysis['prediction'] == expected.split()[1][1] else "❌"
+                st.write(f"{match} **'{text}'**")
+                st.write(f"  Prediksi: {analysis['label']}")
+                st.write(f"  Expected: {expected}")
+                st.write(f"  Cleaned: `{analysis['cleaned']}`")
+                st.write("---")
 
+# Main input
+st.markdown("### ✏️ Masukkan Teks untuk Dianalisis")
 text_input = st.text_area(
-    "Masukkan komentar Platform X:",
-    placeholder="Contoh: Game roblox makin seru setelah update terbaru",
-    height=120
+    "Komentar Platform X tentang Roblox:",
+    placeholder="Contoh: Game roblox makin seru setelah update terbaru!",
+    height=120,
+    key="input_text"
 )
 
-if st.button("Prediksi Sentimen", type="primary"):
-    if text_input.strip() == "":
-        st.warning("⚠️ Teks tidak boleh kosong")
+col1, col2, col3 = st.columns([1, 2, 1])
+with col2:
+    predict_button = st.button("🔍 Analisis Sentimen", type="primary", use_container_width=True)
+
+if predict_button:
+    if not text_input or text_input.strip() == "":
+        st.warning("⚠️ Mohon masukkan teks terlebih dahulu!")
     else:
-        try:
-            # Analisis lengkap
-            analysis = analyze_prediction(text_input)
-            
-            # Tampilkan hasil
-            st.markdown("---")
-            st.subheader("🔮 Hasil Analisis")
-            
-            # Prediction dengan warna
-            if analysis['prediction'] == 0:
-                st.error(f"### {analysis['label']}")
-            elif analysis['prediction'] == 1:
-                st.warning(f"### {analysis['label']}")
-            else:
-                st.success(f"### {analysis['label']}")
-            
-            # Detail analysis
-            with st.expander("📊 Detail Analisis Lengkap"):
-                st.write(f"**Teks asli:** {analysis['original']}")
-                st.write(f"**Teks diproses:** {analysis['cleaned']}")
-                st.write(f"**Tokens:** {analysis['tokens']}")
+        with st.spinner("Menganalisis sentimen..."):
+            try:
+                # Analisis lengkap
+                analysis = analyze_prediction(text_input)
                 
-                st.write("**Vocabulary Check:**")
-                for token, in_vocab in analysis['vocab_status'].items():
-                    status = "✅ ADA" if in_vocab else "❌ TIDAK ADA"
-                    st.write(f"  - {token}: {status}")
+                if not analysis:
+                    st.error("Gagal menganalisis teks.")
+                    st.stop()
                 
-                if 'probabilities' in analysis:
-                    st.write("**Probabilitas:**")
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Negatif", f"{analysis['probabilities']['negatif']:.1%}")
-                    with col2:
-                        st.metric("Netral", f"{analysis['probabilities']['netral']:.1%}")
-                    with col3:
-                        st.metric("Positif", f"{analysis['probabilities']['positif']:.1%}")
-            
-            # Warning jika banyak tokens tidak ada di vocabulary
-            missing_tokens = [t for t, status in analysis['vocab_status'].items() if not status]
-            if missing_tokens:
-                st.warning(f"⚠️ {len(missing_tokens)} token tidak ada dalam vocabulary model: {missing_tokens}")
+                # Tampilkan hasil utama
+                st.markdown("---")
+                st.subheader("🎯 Hasil Analisis")
                 
-        except Exception as e:
-            st.error(f"Terjadi kesalahan: {str(e)}")
+                # Tampilkan label dengan warna dan emoji
+                col_a, col_b, col_c = st.columns([1, 2, 1])
+                with col_b:
+                    if analysis['prediction'] == 0:
+                        st.markdown(f"<h1 style='text-align: center; color: red;'>{analysis['label']}</h1>", 
+                                  unsafe_allow_html=True)
+                    elif analysis['prediction'] == 1:
+                        st.markdown(f"<h1 style='text-align: center; color: orange;'>{analysis['label']}</h1>", 
+                                  unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"<h1 style='text-align: center; color: green;'>{analysis['label']}</h1>", 
+                                  unsafe_allow_html=True)
+                
+                # Detail analysis
+                with st.expander("📊 Detail Analisis Lengkap", expanded=False):
+                    st.markdown("**📝 Teks Asli:**")
+                    st.info(analysis['original'])
+                    
+                    st.markdown("**🔧 Teks Hasil Preprocessing:**")
+                    st.code(analysis['cleaned'])
+                    
+                    st.markdown("**🧩 Tokens:**")
+                    if analysis['tokens']:
+                        st.write(", ".join(f"`{token}`" for token in analysis['tokens']))
+                    else:
+                        st.write("Tidak ada tokens (teks mungkin hanya berisi stopwords)")
+                    
+                    # Vocabulary check
+                    if analysis['vocab_status']:
+                        st.markdown("**📚 Vocabulary Check:**")
+                        in_vocab = [t for t, status in analysis['vocab_status'].items() if status]
+                        not_in_vocab = [t for t, status in analysis['vocab_status'].items() if not status]
+                        
+                        if in_vocab:
+                            st.success(f"✅ {len(in_vocab)} token ada dalam vocabulary")
+                        
+                        if not_in_vocab:
+                            st.warning(f"⚠️ {len(not_in_vocab)} token tidak ada dalam vocabulary:")
+                            st.write(", ".join(f"`{token}`" for token in not_in_vocab))
+                    
+                    # Probabilities
+                    if 'probabilities' in analysis:
+                        st.markdown("**📈 Probabilitas Klasifikasi:**")
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            neg_prob = analysis['probabilities']['negatif']
+                            st.metric(
+                                label="Negatif", 
+                                value=f"{neg_prob:.1%}",
+                                delta=f"{(neg_prob-0.333):+.1%}" if neg_prob > 0.333 else None
+                            )
+                        
+                        with col2:
+                            neu_prob = analysis['probabilities']['netral']
+                            st.metric(
+                                label="Netral", 
+                                value=f"{neu_prob:.1%}",
+                                delta=f"{(neu_prob-0.333):+.1%}" if neu_prob > 0.333 else None
+                            )
+                        
+                        with col3:
+                            pos_prob = analysis['probabilities']['positif']
+                            st.metric(
+                                label="Positif", 
+                                value=f"{pos_prob:.1%}",
+                                delta=f"{(pos_prob-0.333):+.1%}" if pos_prob > 0.333 else None
+                            )
+                        
+                        # Bar chart untuk probabilitas
+                        prob_data = {
+                            'Sentimen': ['Negatif', 'Netral', 'Positif'],
+                            'Probabilitas': [neg_prob, neu_prob, pos_prob]
+                        }
+                        
+                        # Gunakan native Streamlit chart
+                        st.bar_chart(
+                            data=prob_data.set_index('Sentimen'),
+                            color=[label_colors[0], label_colors[1], label_colors[2]]
+                        )
+                
+                # Catatan jika ada
+                if 'note' in analysis:
+                    st.info(analysis['note'])
+                    
+            except Exception as e:
+                st.error(f"❌ Terjadi kesalahan: {str(e)}")
+                st.error("Silakan coba lagi atau periksa input teks Anda.")
+
+# Footer
+st.markdown("---")
+st.caption("Aplikasi Analisis Sentimen menggunakan Bernoulli Naive Bayes • Model dilatih pada data komentar Roblox Indonesia")
